@@ -15,7 +15,7 @@ class FepReleaseManager(QWidget):
         self.setWindowTitle("FEP Release Manager v5.3 (Portable)")
         self.resize(1000, 750)
         
-        # --- [諾亞修正] 決定正確的根目錄 ---
+        # --- [修正] 決定正確的根目錄 ---
         if getattr(sys, 'frozen', False):
             # 情況 A: 如果是被打包成的 EXE
             # sys.executable 會給出 EXE 檔案的完整路徑
@@ -33,7 +33,7 @@ class FepReleaseManager(QWidget):
         self.settings = QSettings(ini_path, QSettings.Format.IniFormat)
         
         # 測試一下 (開發時可以在終端機看到路徑對不對)
-        print(f"諾亞提示: 設定檔將存放在 -> {ini_path}")
+        print(f"提示: 設定檔將存放在 -> {ini_path}")
 
         self.current_folder = ""
         self.setup_ui()
@@ -184,7 +184,7 @@ class FepReleaseManager(QWidget):
         if not raw_path:
             return # 空的就不理你
 
-        # 2. [諾亞防呆機制] 檢查路徑是否存在，且必須是「資料夾」
+        # 2. [防呆機制] 檢查路徑是否存在，且必須是「資料夾」
         if os.path.exists(raw_path) and os.path.isdir(raw_path):
             # 驗證通過！更新全域變數
             self.current_folder = raw_path
@@ -197,10 +197,10 @@ class FepReleaseManager(QWidget):
             self.init_search_filters()
             
             # 給點回饋，讓使用者知道成功了 (可以在狀態列顯示，這裡用 Print 代替)
-            print(f"諾亞認證: 路徑已切換至 {raw_path}")
+            print(f"認證: 路徑已切換至 {raw_path}")
             
         else:
-            # 路徑錯誤，罵人並還原
+            # 路徑錯誤，並還原
             QMessageBox.warning(self, "路徑錯誤", 
                                 f"找不到這個路徑：\n{raw_path}\n\n請確認你沒打錯字，且這必須是一個「資料夾」！")
             
@@ -225,7 +225,7 @@ class FepReleaseManager(QWidget):
             self.path_input.setText(saved_folder)
             self.load_files_to_table()
             self.init_search_filters()
-            print(f"諾亞記憶: 已自動載入 {saved_folder}")
+            print(f"記憶: 已自動載入 {saved_folder}")
 
     def load_files_to_table(self):
         self.file_table.setRowCount(0)
@@ -405,8 +405,14 @@ class FepReleaseManager(QWidget):
         if not filtered_files:
             self.target_file_combo.addItem("(無符合檔案)")
         else:
+            # 先塞一個「全選」選項在最上面
+            batch_option = f"=== 💥 更新清單中所有 {len(filtered_files)} 個檔案 ==="
+            self.target_file_combo.addItem(batch_option)
+            
+            # 然後再把個別檔案加進去
             self.target_file_combo.addItems(filtered_files)
-            self.target_file_combo.setCurrentIndex(0)
+            
+            self.target_file_combo.setCurrentIndex(0) # 預設選這個「全選」選項
             
         self.target_file_combo.blockSignals(False)
         
@@ -429,6 +435,39 @@ class FepReleaseManager(QWidget):
                 self.preview_area.setText(content)
         except Exception:
             self.preview_area.setText("(無法讀取檔案內容)")
+    
+    def process_single_file(self, filename, version_str, new_content):
+        """ 
+        負責處理單一檔案的讀取、保留 Header、寫入。
+        回傳: True (成功) / False (失敗)
+        """
+        full_path = os.path.join(self.current_folder, filename)
+        
+        try:
+            # 1. 搶救 Header (# 開頭的行)
+            header_lines = []
+            if os.path.exists(full_path):
+                with open(full_path, "r", encoding="utf-8") as f:
+                    for line in f:
+                        if line.strip().startswith("#"):
+                            header_lines.append(line)
+            
+            # 2. 準備內容
+            final_text_list = header_lines[:] 
+            if final_text_list and not final_text_list[-1].endswith("\n"):
+                final_text_list.append("\n")
+            
+            final_text_list.append(f"\n{version_str}\n")
+            final_text_list.append(new_content + "\n")
+            
+            # 3. 寫入
+            with open(full_path, "w", encoding="utf-8") as f:
+                f.writelines(final_text_list)
+            
+            return True, "" # 成功，無錯誤訊息
+            
+        except Exception as e:
+            return False, str(e) # 失敗，回傳錯誤原因
 
     def update_file_logic(self):
         # --- 1. 檢查基本環境 ---
@@ -436,9 +475,8 @@ class FepReleaseManager(QWidget):
             QMessageBox.warning(self, "你累了嗎？", "請先到第一頁選擇資料夾！")
             return
 
-        target_file = self.target_file_combo.currentText()
-        # 檢查是否選到了無效選項 (例如 "(無符合檔案)" 或 空白)
-        if not target_file or target_file.startswith("(") or not target_file.endswith(".txt"):
+        selection = self.target_file_combo.currentText()
+        if not selection or selection.startswith("(無"):
             QMessageBox.warning(self, "目標錯誤", "請選擇一個有效的目標檔案！")
             return
 
@@ -462,49 +500,55 @@ class FepReleaseManager(QWidget):
         # --- 3. 檢查內容 ---
         new_content = self.content_input.toPlainText().strip()
         if not new_content:
-            QMessageBox.warning(self, "內容空白", "你沒寫 Release Note 內容，是在更新寂寞嗎？")
+            QMessageBox.warning(self, "缺漏", "更新內容沒填！你是要發布無字天書嗎？")
             return
+        
+        target_files_list = []
+        # 檢查是否選中了我們剛剛加的那個 "=== ... (BATCH) ==="
+        if selection.startswith("==="):
+            # [核彈模式] 抓出下拉選單裡除了第一個(全選)以外的所有檔案
+            count = self.target_file_combo.count()
+            # 從 index 1 開始抓到最後
+            target_files_list = [self.target_file_combo.itemText(i) for i in range(1, count)]
+            
+            # [絕對防呆] 跳出恐怖的警告視窗
+            reply = QMessageBox.question(self, "高風險操作確認", 
+                                         f"⚠️ 警告！你即將同時修改 {len(target_files_list)} 個檔案！\n\n"
+                                         f"這些檔案的舊內容(除了#開頭)將會全部消失！\n"
+                                         f"版號: {full_version_str}\n\n"
+                                         "要繼續嗎？",
+                                         QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+            if reply == QMessageBox.No:
+                return # 怕了就取消
+        else:
+            # [單體模式] 就只有選中的那一個
+            target_files_list = [selection]
 
         # --- 4. 執行核心 I/O (讀取舊Header -> 寫入新檔) ---
-        full_path = os.path.join(self.current_folder, target_file)
+        success_count = 0
+        error_logs = []
         
-        try:
-            # Step A: 搶救 Header (# 開頭的行)
-            header_lines = []
-            if os.path.exists(full_path):
-                with open(full_path, "r", encoding="utf-8") as f:
-                    for line in f:
-                        if line.strip().startswith("#"):
-                            header_lines.append(line)
-            
-            # Step B: 準備要寫入的完整文字
-            # 確保 Header 最後有換行
-            final_text_list = header_lines[:] # 複製一份
-            if final_text_list and not final_text_list[-1].endswith("\n"):
-                final_text_list.append("\n")
-            
-            # 加入新版號與內容
-            # 格式範例:
-            # [1.001.D]
-            # 修正了某個 Bug...
-            final_text_list.append(f"{full_version_str}\n")
-            final_text_list.append(new_content + "\n")
-            
-            # Step C: 暴力寫入 (Overwrite)
-            with open(full_path, "w", encoding="utf-8") as f:
-                f.writelines(final_text_list)
+        for fname in target_files_list:
+            is_ok, err_msg = self.process_single_file(fname, full_version_str, new_content)
+            if is_ok:
+                success_count += 1
+            else:
+                error_logs.append(f"{fname}: {err_msg}")
+        
 
-            # --- 5. 收尾工作 ---
-            QMessageBox.information(self, "成功", f"檔案 {target_file} 更新完成！\n版號: {full_version_str}")
-            
-            # 重新整理介面，讓使用者看到最新的狀態
-            self.load_files_to_table()      # 更新第一頁表格
-            self.preview_target_file()      # 更新當前的預覽區 (你會看到新的內容出現)
-            self.content_input.clear()      # 清空輸入框，避免重複送出
-            self.ver_seq.clear()            # 清空流水號
-            
-        except Exception as e:
-            QMessageBox.critical(self, "崩潰啦", f"寫入檔案時發生錯誤：\n{str(e)}")
+        # --- 5. 收尾工作 ---
+        if len(error_logs) == 0:
+            QMessageBox.information(self, "大成功", 
+                                    f"任務完成！\n成功更新 {success_count} 個檔案。")
+        else:
+            err_str = "\n".join(error_logs)
+            QMessageBox.warning(self, "部分失敗", 
+                                f"成功: {success_count}\n失敗: {len(error_logs)}\n\n錯誤詳情:\n{err_str}")
+        
+        # 重新整理介面，讓使用者看到最新的狀態
+        self.load_files_to_table()      # 更新第一頁表格
+        self.content_input.clear()      # 清空輸入框，避免重複送出
+        
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
