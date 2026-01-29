@@ -548,6 +548,8 @@ class FepReleaseManager(QWidget):
         # 重新整理介面，讓使用者看到最新的狀態
         self.load_files_to_table()      # 更新第一頁表格
         self.content_input.clear()      # 清空輸入框，避免重複送出
+        self.preview_target_file()      # 更新當前的預覽區 (你會看到新的內容出現)
+        self.ver_seq.clear()            # 清空流水號
         
 
 if __name__ == "__main__":
